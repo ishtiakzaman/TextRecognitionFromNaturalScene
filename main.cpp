@@ -13,6 +13,7 @@
 #include <iostream>
 #include <cstdlib>
 #include <string>
+#include <stack>
 #include <vector>
 #include <list>
 #include <utility>
@@ -155,21 +156,24 @@ CImg<double> get_edge_map(CImg<double> &input_image, const double threshold1=11.
 		{
 			G(i,j,0) = sqrt(Gx(i,j)*Gx(i,j)+Gy(i,j)*Gy(i,j));						
 			if (G(i,j,0) > 255) G(i,j,0) = 255;			
-			if ( abs(G(i,j,0)) < 0.0001)
-				G(i,j,1) = PI / 2.0;
-			else
-				G(i,j,1) = atan(Gy(i,j) / Gx(i,j));
+			G(i,j,1) = atan2(Gy(i,j), Gx(i,j));
 		}		
 	}
-	G.save("G.png");
+	/*G.save("G.png");
+	CImg<double> GTheta(input_image.width(), input_image.height(), 1, 1, 255);
+	for (int i = 0; i < G.width(); ++i)	
+		for (int j = 0; j < G.height(); ++j)
+			//if (G(i,j,0) > threshold1)
+			GTheta(i,j) = (int)(G(i,j,1) * 180.0 / PI + 0.5 + 360*8) % 360;;
 
+	GTheta.get_normalize(0, 255).save("GTheta.png");
+	*/
 	return edge_thinning_non_maximum_suppress(G, threshold1, threshold2, range);	
 }
 
 CImg<double> get_stroke_width(CImg<double> &G)
-{
+{	
 	list< list< pair<int, int> > > lines;
-	//CImg<double> stroke_width(G.width(), G.height(), 1, 1, 999999999.9);
 	CImg<double> stroke_width(G.width(), G.height(), 1, 1, 255);
 
 	for (int i = 0; i < G.width(); ++i)
@@ -177,88 +181,61 @@ CImg<double> get_stroke_width(CImg<double> &G)
 		for (int j = 0; j < G.height(); ++j)
 		{
 			if (G(i,j,0) < 254)
-				continue;
-					
-			list< pair<int, int> > points1, points2;
-			int x, y, save_sign;
+				continue;	
+
+			list< pair<int, int> > points;
+			points.push_back(make_pair(i,j));
+
+			double w, direction = G(i,j,1);
+			int x, y, prev_x = i, prev_y = j;
 			bool found = false;
-			double minW = 9999999.9;
+		
+			for (double d = 0.1; ; d += 0.3)
+			{	
+				x = i + d * cos(direction) + 0.5;			
+				y = j + d * sin(direction) + 0.5;	
 
-			for (int sign = 1; sign >= -1; sign -= 2) // +1, -1			
-			{
-				//if (found == true)
-				//	break;
+				if (x < 0 || y < 0 || y >= G.height() || x >= G.width())
+					break;
 
-				//points.clear();
+				if (x == prev_x && y == prev_y)
+					continue;
 
-				if (sign == 1)
-					points1.push_back(make_pair(i,j));
-				else
-					points2.push_back(make_pair(i,j));
+				prev_x = x;
+				prev_y = y;
 
-				double direction = G(i,j,1);
-				for (int d = 1; ; ++d)
-				{	
-					x = i + d * cos(direction) * sign + 0.5;			
-					y = j + d * sin(direction) * sign + 0.5;	
+				points.push_back(make_pair(x,y));
 
-					if (x < 0 || y < 0 || y >= G.height() || x >= G.width())
-						break;
-
-					if (y == j && x == i)
-						continue;	
-
-					if (sign == 1)
-						points1.push_back(make_pair(x,y));
-					else
-						points2.push_back(make_pair(x,y));
-
-					if (G(x,y,0) > 254)
+				if (G(x,y,0) > 254)
+				{
+					int dir1 = (int)(direction * 180.0 / PI + 0.5 + 360*4) % 360;
+					int dir2 = (int)(G(x,y,1) * 180.0 / PI + 0.5 + 360*4) % 360;
+					if (dir2 > dir1)
 					{
-						int dir1 = (int)(direction * 180.0 / PI + 0.5 + 360*4 + (sign==-1?180:0)) % 360;
-						int dir2 = (int)(G(x,y,1) * 180.0 / PI + 0.5 + 360*4) % 360;
-						if (dir2 > dir1)
-						{
-							int temp = dir1;
-							dir1 = dir2;
-							dir2 = temp;
-						}
-						double w = sqrt((i-x)*(i-x)+(j-y)*(j-y));
-						if (w < minW)	
-						{						
-							minW = w;
-							found = false;
-						}
-
-						if ( dir1-dir2 < 30 || abs(dir1-(dir2+180)) < 30)
-						//if ( abs(dir1-(dir2+180)) < 30)			
-						{							
-							w = sqrt((i-x)*(i-x)+(j-y)*(j-y));
-							if (w < minW + 0.05)
-							{
-								found = true;
-								minW = w;
-								save_sign = sign;
-							}
-						}
-						break;
+						int temp = dir1;
+						dir1 = dir2;
+						dir2 = temp;
 					}
+									
+					if ( abs(dir1-(dir2+180)) < 35)
+					{							
+						w = sqrt((i-x)*(i-x)+(j-y)*(j-y));
+						found = true;						
+					}
+					break;
 				}
 			}
-			
+		
 			if (found == true)
 			{						
-				for(list< pair<int, int> >::iterator it = (save_sign==1?points1.begin():points2.begin());
-						 it != (save_sign==1?points1.end():points2.end()); ++it)
+				for(list< pair<int, int> >::iterator it = points.begin(); it != points.end(); ++it)
 				{
 					x = (*it).first;
 					y = (*it).second;
-					stroke_width(x,y) = min(stroke_width(x,y), minW);					
+					stroke_width(x,y) = min(stroke_width(x,y), w);					
 				}
-
-				lines.push_back(save_sign==1?points1:points2);
-			}
-			
+				lines.push_back(points);
+			}							
 		}
 	}
 
@@ -278,10 +255,11 @@ CImg<double> get_stroke_width(CImg<double> &G)
 			avg = 0.0;
 		else
 			avg = avg / count;
+
 		for(list< pair<int, int> >::iterator it2 = (*it).begin(); it2 != (*it).end(); ++it2)
 		{
 			x = (*it2).first;
-			y = (*it2).second;
+			y = (*it2).second;			
 			if (stroke_width(x,y) > avg)
 				stroke_width(x,y) = avg;
 		}
@@ -295,24 +273,45 @@ void group_candidates(CImg<double> &G, CImg<bool> &visited, list<pair<int,int> >
 {	
 	if (visited(i,j) == true)		
 		return;
-	
-	visited(i,j) = true;
-	group.push_back(make_pair(i,j));	
-	for (int x = i-1; x <= i+1; ++x)
+
+	stack<pair<int,int> > stck;
+	stck.push(make_pair(i,j));
+
+	while (stck.empty() == false)
 	{
-		if (x < 0 || x >= G.width())
-			continue;
-		for (int y = j-1; y <= j+1; ++y)
+		i = stck.top().first;
+		j = stck.top().second;
+		stck.pop();
+
+		visited(i,j) = true;
+		group.push_back(make_pair(i,j));
+
+		for (int x = i-1; x <= i+1; ++x)
 		{
-			if (y < 0 || y >= G.height())
+			if (x < 0 || x >= G.width())
 				continue;
-			if (G(x,y) < 1.0 || G(i,j) < 1.0) continue;	
-			if (G(x,y) > 254) continue;
-			double ratio = G(x,y)>G(i,j)?G(x,y)/G(i,j):G(i,j)/G(x,y);		
-			if (ratio < threshold && visited(x,y)==false)
-				group_candidates(G, visited, group, threshold, x, y);
+			
+			for (int y = j-1; y <= j+1; ++y)
+			{
+				if (y < 0 || y >= G.height())
+					continue;
+				if (G(x,y) < 1.0 || G(i,j) < 1.0) continue;	
+				if (G(x,y) > 254) continue;
+				double ratio = G(x,y)>G(i,j)?G(x,y)/G(i,j):G(i,j)/G(x,y);		
+				if (ratio < threshold && visited(x,y)==false)					
+					stck.push(make_pair(x,y));
+			}
 		}
 	}
+}
+
+double get_mean(CImg<double> &G, list< pair<int, int> > &points)
+{
+	double avg = 0.0, n = points.size();
+	for (list< pair<int, int> >::iterator it = points.begin(); it != points.end(); ++it)
+		avg += G((*it).first,(*it).second);
+	avg /= n;	
+	return avg;
 }
 
 double get_variance(CImg<double> &G, list< pair<int, int> > &points)
@@ -322,14 +321,14 @@ double get_variance(CImg<double> &G, list< pair<int, int> > &points)
 		avg += G((*it).first,(*it).second);
 	avg /= n;
 	for (list< pair<int, int> >::iterator it = points.begin(); it != points.end(); ++it)	
-		sigma = (G((*it).first,(*it).second) - avg)*(G((*it).first,(*it).second) - avg);	
+		sigma += (G((*it).first,(*it).second) - avg)*(G((*it).first,(*it).second) - avg);	
 	sigma /= n;
 	return sqrt(sigma);
 }
 
-CImg<double> find_letter_candidates(CImg<double> &G, double threshold1=3.0, int threshold2=10, double threshold3=3.0)
+CImg<double> find_letter_candidates(CImg<double> &G, double threshold1=3.0, int threshold2=50, double threshold3=5.0)
 {
-	CImg<double> letter_candidates;
+	CImg<double> letter_candidates(G.width(), G.height(), 1, 1, 255);
 
 	list< list< pair<int, int> > > groups;	
 	CImg<bool> visited(G.width(), G.height(), 1, 1, false);	
@@ -340,44 +339,25 @@ CImg<double> find_letter_candidates(CImg<double> &G, double threshold1=3.0, int 
 		{
 			if (G(i,j) > 254)
 				continue;
-			list<pair<int,int> > group;
-			if (visited(i,j) == false)
-				group_candidates(G, visited, group, threshold1, i, j);				
+			if (visited(i,j) == true)
+				continue;
+
+			list<pair<int,int> > group;			
+			group_candidates(G, visited, group, threshold1, i, j);			
 			groups.push_back(group);
 		}
 	}
-	/*
-	for (int i = 0; i < G.width(); ++i)	
-		for (int j = 0; j < G.height(); ++j)
-			if (visited(i,j) == false)
-				G(i,j) = 255;*/
 
-	letter_candidates(G.width(), G.height(), 1, 1, 255);
-
-	/*for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); ++it)
+	for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); ++it)
 	{
 		int group_size = (*it).size();
-		if ( group_size > threshold2 && get_variance(G, *it) < threshold3)
+		double mean_width = get_mean(G, *it);
+		if ( group_size > threshold2 && get_variance(G, *it) < threshold3 && mean_width > 10)
 		{
 			for(list< pair<int, int> >::iterator it2 = (*it).begin(); it2 != (*it).end(); ++it2)
 				letter_candidates((*it2).first, (*it2).second) = G((*it2).first, (*it2).second);
 		}
-	}*/
-
-	int cnt = 0;
-	for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); ++it)
-	{
-		for(list< pair<int, int> >::iterator it2 = (*it).begin(); it2 != (*it).end(); ++it2)
-		{
-			int x = (*it2).first;
-			int y = (*it2).second;
-			if (x < 0 || x >= G.width() || y < 0 || y >= G.height() )
-				cout << x << ":" << y << endl;
-			else
-				cnt++;
-		}
 	}
-	cout << cnt << "<>" << groups.size() << endl;
 
 	return letter_candidates;
 }
@@ -410,9 +390,9 @@ int main(int argc, char **argv)
 	CImg<double> edge_map = get_edge_map(input_image);
 	edge_map.save("edge.png");
 
-	CImg<double> stroke_width = get_stroke_width(edge_map);
+	CImg<double> stroke_width = get_stroke_width(edge_map);	
 	stroke_width.save("stroke_width.png");
 	
-	//CImg<double> letter_candidates = find_letter_candidates(stroke_width, threshold1, threshold2, threshold3);
-	//letter_candidates.save("letter_candidates.png");	
+	CImg<double> letter_candidates = find_letter_candidates(stroke_width);//, threshold1, threshold2, threshold3);
+	letter_candidates.save("letter_candidates.png");	
 }
