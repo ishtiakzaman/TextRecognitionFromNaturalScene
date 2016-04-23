@@ -159,15 +159,7 @@ CImg<double> get_edge_map(CImg<double> &input_image, const double threshold1=11.
 			G(i,j,1) = atan2(Gy(i,j), Gx(i,j));
 		}		
 	}
-	/*G.save("G.png");
-	CImg<double> GTheta(input_image.width(), input_image.height(), 1, 1, 255);
-	for (int i = 0; i < G.width(); ++i)	
-		for (int j = 0; j < G.height(); ++j)
-			//if (G(i,j,0) > threshold1)
-			GTheta(i,j) = (int)(G(i,j,1) * 180.0 / PI + 0.5 + 360*8) % 360;;
 
-	GTheta.get_normalize(0, 255).save("GTheta.png");
-	*/
 	return edge_thinning_non_maximum_suppress(G, threshold1, threshold2, range);	
 }
 
@@ -217,7 +209,8 @@ CImg<double> get_stroke_width(CImg<double> &G)
 						dir2 = temp;
 					}
 									
-					if ( abs(dir1-(dir2+180)) < 35)
+					//if ( abs(dir1-(dir2+180)) < 35)
+					if ( abs(dir1-(dir2+180)) < 55)
 					{							
 						w = sqrt((i-x)*(i-x)+(j-y)*(j-y));
 						found = true;						
@@ -269,7 +262,7 @@ CImg<double> get_stroke_width(CImg<double> &G)
 }
 
 void group_candidates(CImg<double> &G, CImg<bool> &visited, list<pair<int,int> > &group,
-														double threshold, int i, int j)
+														int i, int j, double threshold)
 {	
 	if (visited(i,j) == true)		
 		return;
@@ -326,13 +319,70 @@ double get_variance(CImg<double> &G, list< pair<int, int> > &points)
 	return sqrt(sigma);
 }
 
-CImg<double> find_letter_candidates(CImg<double> &G, double threshold1=3.0, int threshold2=50, double threshold3=5.0)
+pair<double,double> get_diameter(list< pair<int, int> > &points)
+{
+	double minx = 9999.9, miny = 9999.9, maxx = -9999.9, maxy = -9999.9;
+	for (list< pair<int, int> >::iterator it = points.begin(); it != points.end(); ++it)
+	{
+		double x = (*it).first;
+		double y = (*it).second;
+		if (x < minx) minx = x;
+		if (x > maxx) maxx = x;
+		if (y < miny) miny = y;
+		if (y > maxy) maxy = y;
+	}
+	
+	return make_pair(maxx-minx, maxy-miny);	
+}
+
+CImg<double> set_bounding_box(CImg<double> &image, list< list< pair<int, int> > > &groups)
+{
+	CImg<double> result(image.width(), image.height(), 1, 3, 0.0);
+	for (int i = 0; i < image.width(); ++i)	
+		for (int j = 0; j < image.height(); ++j)			
+			for (int p = 0; p < 3; ++p)
+				result(i,j,p) = image(i,j);
+
+	const unsigned char color[] = {255, 0, 0};
+	for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); it++)
+	{
+		double minx = 9999.9, miny = 9999.9, maxx = -9999.9, maxy = -9999.9;
+		for (list< pair<int, int> >::iterator it2 = (*it).begin(); it2 != (*it).end(); ++it2)
+		{
+			double x = (*it2).first;
+			double y = (*it2).second;
+			if (x < minx) minx = x;
+			if (x > maxx) maxx = x;
+			if (y < miny) miny = y;
+			if (y > maxy) maxy = y;
+		}
+		for (int w = 0; w < 5; ++w)
+		{
+			result.draw_line(minx-w, miny-w, maxx+w, miny-w, color);
+			result.draw_line(minx-w, miny-w, minx-w, maxy+w, color);
+			result.draw_line(maxx+w, miny-w, maxx+w, maxy+w, color);
+			result.draw_line(minx-w, maxy+w, maxx+w, maxy+w, color);
+		}
+	}
+
+	return result;
+
+}
+
+CImg<double> find_letter_candidates(CImg<double> &G, double threshold1=5.0, int threshold2=500, double threshold3=3.0)
 {
 	CImg<double> letter_candidates(G.width(), G.height(), 1, 1, 255);
+	for (int i = 0; i < G.width(); ++i)	
+		for (int j = 0; j < G.height(); ++j)
+			letter_candidates(i,j) = G(i,j);
+
+	double gray_color = 220;
+	double ratio = G.width() / 1500.0;
 
 	list< list< pair<int, int> > > groups;	
 	CImg<bool> visited(G.width(), G.height(), 1, 1, false);	
 	
+	// Group together
 	for (int i = 0; i < G.width(); ++i)
 	{
 		for (int j = 0; j < G.height(); ++j)
@@ -343,23 +393,131 @@ CImg<double> find_letter_candidates(CImg<double> &G, double threshold1=3.0, int 
 				continue;
 
 			list<pair<int,int> > group;			
-			group_candidates(G, visited, group, threshold1, i, j);			
+			group_candidates(G, visited, group, i, j, threshold1);
 			groups.push_back(group);
 		}
 	}
 
-	for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); ++it)
+	// filter with variance
+	for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); )
+	{		
+		double mean_width = get_mean(G, *it);
+		if (get_variance(G, *it) > threshold3)
+		{
+			for(list< pair<int, int> >::iterator it2 = (*it).begin(); it2 != (*it).end(); ++it2)				
+				letter_candidates((*it2).first, (*it2).second) = gray_color;
+			it = groups.erase(it);
+		}
+		else
+			++it;
+	}
+	letter_candidates.save("letter_candidates_1.png");
+
+	// filter with group size
+	for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); )
+	{
+		int group_size = (*it).size();		
+		if ( group_size < threshold2 * ratio)
+		{
+			for(list< pair<int, int> >::iterator it2 = (*it).begin(); it2 != (*it).end(); ++it2)				
+				letter_candidates((*it2).first, (*it2).second) = gray_color;
+			it = groups.erase(it);
+		}
+		else
+			++it;
+	}
+	letter_candidates.save("letter_candidates_2.png");
+
+	// filter with mean_width
+	for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); )
 	{
 		int group_size = (*it).size();
 		double mean_width = get_mean(G, *it);
-		if ( group_size > threshold2 && get_variance(G, *it) < threshold3 && mean_width > 10)
+		if (mean_width < 5 * ratio)
 		{
-			for(list< pair<int, int> >::iterator it2 = (*it).begin(); it2 != (*it).end(); ++it2)
-				letter_candidates((*it2).first, (*it2).second) = G((*it2).first, (*it2).second);
+			for(list< pair<int, int> >::iterator it2 = (*it).begin(); it2 != (*it).end(); ++it2)				
+				letter_candidates((*it2).first, (*it2).second) = gray_color;
+			it = groups.erase(it);
 		}
+		else
+			++it;
 	}
+	letter_candidates.save("letter_candidates_3.png");
+
+	// filter with width/height ratio
+	for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); )
+	{		
+		pair<double,double> diameter = get_diameter(*it);
+		double r = diameter.first > diameter.second? diameter.first / diameter.second : diameter.second / diameter.first;
+		if (r > 5 || diameter.first / diameter.second > 1.0)
+		{
+			for(list< pair<int, int> >::iterator it2 = (*it).begin(); it2 != (*it).end(); ++it2)				
+				letter_candidates((*it2).first, (*it2).second) = gray_color;
+			it = groups.erase(it);
+		}
+		else
+			++it;
+	}
+	letter_candidates.save("letter_candidates_4.png");
+
+	// filter with max size / min size
+	for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); )
+	{		
+		pair<double,double> diameter = get_diameter(*it);
+		if (diameter.first > 100 * ratio || diameter.second < 8 * ratio)
+		{
+			for(list< pair<int, int> >::iterator it2 = (*it).begin(); it2 != (*it).end(); ++it2)				
+				letter_candidates((*it2).first, (*it2).second) = gray_color;
+			it = groups.erase(it);
+		}
+		else
+			++it;
+	}
+	letter_candidates.save("letter_candidates_5.png");
+
+	// filter with area size
+	for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); )
+	{		
+		pair<double,double> diameter = get_diameter(*it);
+		if (diameter.first * diameter.second < 600 * ratio || diameter.first * diameter.second > 3800 * ratio)
+		{
+			for(list< pair<int, int> >::iterator it2 = (*it).begin(); it2 != (*it).end(); ++it2)				
+				letter_candidates((*it2).first, (*it2).second) = gray_color;
+			it = groups.erase(it);
+		}
+		else
+			++it;
+	}
+	letter_candidates.save("letter_candidates_6.png");
+
+	// filter with diameter / width ratio
+	for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); )
+	{		
+		pair<double,double> diameter = get_diameter(*it);
+		double mean_width = get_mean(G, *it);
+		if (diameter.first * diameter.second / mean_width < 200)
+		{
+			for(list< pair<int, int> >::iterator it2 = (*it).begin(); it2 != (*it).end(); ++it2)				
+				letter_candidates((*it2).first, (*it2).second) = gray_color;
+			it = groups.erase(it);
+		}
+		else
+			++it;
+	}
+	letter_candidates.save("letter_candidates_7.png");
+
+	set_bounding_box(letter_candidates, groups).save("boxed_letters.png");
 
 	return letter_candidates;
+}
+
+CImg<double> get_negative(CImg<double> &G)
+{
+	CImg<double> negative_image(G.width(), G.height());
+	for (int i = 0; i < G.width(); ++i)	
+		for (int j = 0; j < G.height(); ++j)			
+			negative_image(i,j) = 255-G(i,j);
+	return negative_image;
 }
 
 int main(int argc, char **argv)
@@ -388,11 +546,12 @@ int main(int argc, char **argv)
 	CImg<double> input_image(inputFile.c_str());
 
 	CImg<double> edge_map = get_edge_map(input_image);
-	edge_map.save("edge.png");
+
+	get_negative(edge_map).save("edge.png");
 
 	CImg<double> stroke_width = get_stroke_width(edge_map);	
 	stroke_width.save("stroke_width.png");
 	
-	CImg<double> letter_candidates = find_letter_candidates(stroke_width);//, threshold1, threshold2, threshold3);
+	CImg<double> letter_candidates = find_letter_candidates(stroke_width);//, threshold1, threshold2, threshold3);	
 	letter_candidates.save("letter_candidates.png");	
 }
