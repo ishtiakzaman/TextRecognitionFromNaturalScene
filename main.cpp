@@ -10,6 +10,7 @@
 #include <ctime>
 #include <cmath>
 #include <sstream>
+#include <fstream>
 #include <iostream>
 #include <cstdlib>
 #include <string>
@@ -18,11 +19,19 @@
 #include <list>
 #include <utility>
 
+#define OVERFEAT_PATH "/../overfeat/bin/linux_64/overfeat"
+
 //Use the cimg namespace to access the functions easily
 using namespace cimg_library;
 using namespace std;
 
 #define PI 3.141592654
+
+typedef struct rect_struct
+{
+	int x, y, w, h;
+	string class_name;
+} rect;
 
 void flood_fill(CImg<double> &G, CImg<bool> &visited, double threshold1, int i, int j)
 {
@@ -335,15 +344,9 @@ pair<double,double> get_diameter(list< pair<int, int> > &points)
 	return make_pair(maxx-minx, maxy-miny);	
 }
 
-CImg<double> set_bounding_box(CImg<double> &image, list< list< pair<int, int> > > &groups)
+list<rect> get_bounding_boxes(list< list< pair<int, int> > > &groups)
 {
-	CImg<double> result(image.width(), image.height(), 1, 3, 0.0);
-	for (int i = 0; i < image.width(); ++i)	
-		for (int j = 0; j < image.height(); ++j)			
-			for (int p = 0; p < 3; ++p)
-				result(i,j,p) = image(i,j);
-
-	const unsigned char color[] = {255, 0, 0};
+	list<rect> boxes;	
 	for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); it++)
 	{
 		double minx = 9999.9, miny = 9999.9, maxx = -9999.9, maxy = -9999.9;
@@ -355,21 +358,110 @@ CImg<double> set_bounding_box(CImg<double> &image, list< list< pair<int, int> > 
 			if (x > maxx) maxx = x;
 			if (y < miny) miny = y;
 			if (y > maxy) maxy = y;
-		}
-		for (int w = 0; w < 5; ++w)
-		{
-			result.draw_line(minx-w, miny-w, maxx+w, miny-w, color);
-			result.draw_line(minx-w, miny-w, minx-w, maxy+w, color);
-			result.draw_line(maxx+w, miny-w, maxx+w, maxy+w, color);
-			result.draw_line(minx-w, maxy+w, maxx+w, maxy+w, color);
-		}
+		}	
+
+		rect box;
+		box.x = minx;
+		box.y = miny;
+		box.w = maxx - minx + 1;
+		box.h = maxy - miny + 1;
+		boxes.push_back(box);	
 	}
-
-	return result;
-
+	
+	return boxes;
 }
 
-CImg<double> find_letter_candidates(CImg<double> &G, double threshold1=5.0, int threshold2=500, double threshold3=3.0)
+string classify(CImg<double> &image, rect &box)
+{
+
+	string svm_test_file_name = "deep_svm_test.dat";
+	string svm_model_file_name = "deep_svm_model.dat";
+	string svm_prediction_file_name = "deep_svm_predict.dat";
+	string feature_file_name = "overfeat_features.dat";
+	string file_name = "temp_extract.png";	
+
+	CImg<double> extracted_image(box.w+8, box.h+8, 1, 3, 255);
+	for (int i = 0; i < box.w; ++i)	
+		for (int j = 0; j < box.h; ++j)			
+			for (int p = 0; p < extracted_image.spectrum(); ++p)
+				extracted_image(i+4,j+4,0,p) = image(i+box.x, j+box.y, 0, p);
+	CImg<double> gray_extracted;
+	if (extracted_image.spectrum() > 1)
+		gray_extracted = extracted_image.get_RGBtoYCbCr().get_channel(0);
+	else
+		gray_extracted = extracted_image;	
+	gray_extracted.resize(231, 231);
+	gray_extracted.save(file_name.c_str());
+
+	string cmd = ".";
+	cmd += OVERFEAT_PATH;
+	cmd += " -L 21 ";
+	cmd += file_name;
+	cmd += " > ";
+	cmd += feature_file_name;
+
+	system(cmd.c_str());
+
+	ifstream ifs_feat(feature_file_name.c_str());
+	if (ifs_feat.is_open() == false)
+	{
+		cout << "Failed to read file: " << feature_file_name << endl;
+		exit(0);
+	}
+
+	ofstream ofs;
+	ofs.open(svm_test_file_name.c_str());
+	ofs << "2";
+
+	int feature_index = 1;		
+	int nf, w, h;
+	double value;
+			
+	ifs_feat >> nf >> h >> w;
+	// Loop through all the features
+	for (int i = 0; i < nf * w * h; ++i)
+	{			
+		ifs_feat >> value;
+		ofs << " " << feature_index << ":" << value;
+		feature_index++;
+	}
+	ifs_feat.close();
+
+	ofs << endl;
+	ofs.close();
+
+	cmd = "./svm_multiclass_classify -v 0 ";
+	cmd += svm_test_file_name;
+	cmd += " ";
+	cmd += svm_model_file_name;
+	cmd += " ";
+	cmd += svm_prediction_file_name;
+
+	system(cmd.c_str());
+
+	ifstream ifs(svm_prediction_file_name.c_str());
+	int num;
+	string class_name;
+
+	ifs >> num;
+	if (num <= 10)
+	{
+		class_name = '0' + num - 1;
+	}
+	else if (num <= 36)
+	{
+		class_name = 'A' + num - 11;
+	}
+	else if (num <= 62)
+	{
+		class_name = 'a' + num - 37;
+	}
+	cout << class_name << endl;
+	return class_name;
+}
+
+/*
+list< list< pair<int, int> > > find_letter_candidates_debug(CImg<double> &G, double threshold1=5.0, int threshold2=500, double threshold3=3.0)
 {
 	CImg<double> letter_candidates(G.width(), G.height(), 1, 1, 255);
 	for (int i = 0; i < G.width(); ++i)	
@@ -504,11 +596,65 @@ CImg<double> find_letter_candidates(CImg<double> &G, double threshold1=5.0, int 
 		else
 			++it;
 	}
-	letter_candidates.save("letter_candidates_7.png");
+	letter_candidates.save("letter_candidates_7.png");	
 
-	set_bounding_box(letter_candidates, groups).save("boxed_letters.png");
+	return groups;
+}
+*/
 
-	return letter_candidates;
+list< list< pair<int, int> > > find_letter_candidates(CImg<double> &G, double threshold1=5.0, int threshold2=500, double threshold3=3.0)
+{
+	CImg<double> letter_candidates(G.width(), G.height(), 1, 1, 255);
+	for (int i = 0; i < G.width(); ++i)	
+		for (int j = 0; j < G.height(); ++j)
+			letter_candidates(i,j) = G(i,j);
+
+	double gray_color = 220;
+	double ratio = G.width() / 1500.0;
+
+	list< list< pair<int, int> > > groups;	
+	CImg<bool> visited(G.width(), G.height(), 1, 1, false);	
+	
+	// Group together
+	for (int i = 0; i < G.width(); ++i)
+	{
+		for (int j = 0; j < G.height(); ++j)
+		{
+			if (G(i,j) > 254)
+				continue;
+			if (visited(i,j) == true)
+				continue;
+
+			list<pair<int,int> > group;			
+			group_candidates(G, visited, group, i, j, threshold1);
+			groups.push_back(group);
+		}
+	}
+
+	// filter with variance
+	for(list< list< pair<int, int> > >::iterator it = groups.begin(); it != groups.end(); )
+	{		
+		double mean_width = get_mean(G, *it);
+		int group_size = (*it).size();	
+		pair<double,double> diameter = get_diameter(*it);
+		double r = diameter.first > diameter.second? diameter.first / diameter.second : diameter.second / diameter.first;
+		if (get_variance(G, *it) > threshold3 || group_size < threshold2 * ratio || mean_width < 5 * ratio ||
+			(r > 5 || diameter.first / diameter.second > 1.0) || (diameter.first > 100 * ratio || diameter.second < 8 * ratio) ||
+			(diameter.first * diameter.second < 600 * ratio || diameter.first * diameter.second > 3800 * ratio) ||
+			(diameter.first * diameter.second / mean_width < 200))
+		{
+			for(list< pair<int, int> >::iterator it2 = (*it).begin(); it2 != (*it).end(); ++it2)				
+				letter_candidates((*it2).first, (*it2).second) = gray_color;
+			it = groups.erase(it);
+		}		
+
+		else
+			++it;
+	}
+
+	letter_candidates.save("letter_candidates.png");	
+
+	return groups;
 }
 
 CImg<double> get_negative(CImg<double> &G)
@@ -552,6 +698,31 @@ int main(int argc, char **argv)
 	CImg<double> stroke_width = get_stroke_width(edge_map);	
 	stroke_width.save("stroke_width.png");
 	
-	CImg<double> letter_candidates = find_letter_candidates(stroke_width);//, threshold1, threshold2, threshold3);	
-	letter_candidates.save("letter_candidates.png");	
+	list< list< pair<int, int> > > groups = find_letter_candidates(stroke_width);//, threshold1, threshold2, threshold3);	
+	
+	list<rect> boxes = get_bounding_boxes(groups);
+	for (list<rect>::iterator it = boxes.begin(); it != boxes.end(); ++it)	
+		(*it).class_name = classify(input_image, *it);
+
+	const unsigned char color[] = {255, 0, 0};
+	CImg<double> boxed_image = input_image;	
+	for (list<rect>::iterator it = boxes.begin(); it != boxes.end(); ++it)
+	{
+		int minx = it->x, maxx = it->x+it->w, miny = it->y, maxy = it->y+it->h;	
+		for (int w = 0; w < 5; ++w)
+		{
+			if (minx-w < 0) w = minx;
+			if (miny-w < 0) w = miny;
+			if (maxx+w >= boxed_image.width()) w=boxed_image.width()-maxx-1;
+			if (maxy+w >= boxed_image.height()) w=boxed_image.height()-maxy-1;
+			boxed_image.draw_line(minx-w, miny-w, maxx+w, miny-w, color);
+			boxed_image.draw_line(minx-w, miny-w, minx-w, maxy+w, color);
+			boxed_image.draw_line(maxx+w, miny-w, maxx+w, maxy+w, color);
+			boxed_image.draw_line(minx-w, maxy+w, maxx+w, maxy+w, color);
+		}
+		boxed_image.draw_text(it->x, it->y-60, (it->class_name).c_str(), color, 0, 1, 60);
+	}
+	
+	
+	boxed_image.save("boxed_letters.png");
 }
